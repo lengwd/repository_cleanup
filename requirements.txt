@@ -1,0 +1,8 @@
+# GitHub-Ready 项目重组工具 依赖
+# 安装: pip install -r requirements.txt
+
+# AI API 调用
+openai>=1.0.0
+
+# （可选）如果使用 DeepSeek，不需要额外依赖
+# （可选）如果使用 OpenAI，不需要额外依赖
