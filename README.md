@@ -23,7 +23,7 @@
 |------|------|
 | 🔍 **自动扫描** | 遍历目录，统计 Python 文件、行数、大小 |
 | 📦 **大文件检测** | 自动识别大目录/大文件（>10MB/50MB），给出 Git LFS 建议 |
-| 🤖 **AI 架构分析** | DeepSeek 分析代码，识别重复、建议重组方案 |
+| 🤖 **AI 架构分析** | DeepSeek 分析代码，识别重复、建议重组方案（自适应读取，小文件全量读、大文件智能截断） |
 | 📋 **重组计划生成** | AI 规划新目录结构 + 文件迁移映射 |
 | 💾 **自动备份** | 重组前创建时间戳备份，零风险操作 |
 | 📝 **自动生成文档** | README.md / .gitignore / .gitattributes / requirements.txt |
@@ -96,6 +96,9 @@ python main.py
 # 仅分析项目结构
 python analyze_project.py /path/to/project
 
+# 仅分析并指定代码读取预算（默认 100,000 字符）
+python analyze_project.py /path/to/project --max-chars 200000
+
 # 仅生成 README
 python generate_readme.py /path/to/project my-project-name "项目描述"
 
@@ -122,7 +125,7 @@ python restructure_project.py plan.json
 # 方式1：环境变量（推荐，安全）
 export DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxxxxx"
 export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-export DEEPSEEK_MODEL="deepseek-chat"
+export DEEPSEEK_MODEL="deepseek-v4-pro"
 
 # 方式2：首次运行交互输入（自动保存到 config.json）
 python main.py  # 按提示输入即可
@@ -139,13 +142,13 @@ python main.py  # 按提示输入即可
 |------|--------|------|
 | `DEEPSEEK_API_KEY` | — | API 密钥 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 端点 |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
+| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 模型名称 |
 
 ## 🔒 安全说明
 
 - **API Key 仅保存在本地** `config.json`（文件权限 600，仅当前用户可读写）
 - **原项目会先备份**再重组，操作可逆
-- **所有 AI 调用**只发送代码片段（每个文件最多前 60 行），不发送完整数据文件
+- **所有 AI 调用**只发送代码片段（自适应读取：小文件全量发送、大文件按预算截断），不发送完整数据文件
 - 不会向 GitHub 或第三方上传任何数据
 
 ## 📄 License
