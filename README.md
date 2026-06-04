@@ -23,6 +23,7 @@
 |------|------|
 | 🔍 **自动扫描** | 遍历目录，统计 Python 文件、行数、大小 |
 | 📦 **大文件检测** | 自动识别大目录/大文件（>10MB/50MB），给出 Git LFS 建议 |
+| ⏭️ **大文件自动跳过** | 模型参数、数据集等大文件不复制到新项目，生成 `_LARGE_FILES_MANIFEST.md` 记录清单 |
 | 🤖 **AI 架构分析** | DeepSeek 分析代码，识别重复、建议重组方案（自适应读取，小文件全量读、大文件智能截断） |
 | 📋 **重组计划生成** | AI 规划新目录结构 + 文件迁移映射 |
 | 💾 **自动备份** | 重组前创建时间戳备份，零风险操作 |
@@ -35,11 +36,12 @@
 ```
 github-ready-重构工具/
 ├── main.py                    🎯 主入口 — 交互式 CLI，一键走完完整流程
-├── config.py                  🔑 配置管理 — API Key（环境变量 > config.json > 交互输入）
-├── analyze_project.py         🔍 项目扫描与 AI 分析
+├── config.py                  🔑 配置管理 — API Key/模型（环境变量 > config.json > 交互输入）
+├── analyze_project.py         🔍 项目扫描与 AI 分析（自适应读取）
 ├── restructure_project.py     📋 重组计划生成与展示确认
-├── execute_refactor.py        🛠️ 备份与重组执行引擎
+├── execute_refactor.py        🛠️ 备份与重组执行引擎（大文件自动跳过 + 清单记录）
 ├── generate_readme.py         📝 README.md 自动生成
+├── git_helper.py              🔄 Git 上传助手（交互式提交 + 推送）
 ├── requirements.txt           依赖清单
 └── README.md                  本文件
 ```
@@ -83,12 +85,12 @@ python main.py
 
 | 步骤 | 操作 |
 |------|------|
-| **第0步** | 配置 API Key（首次输入可保存，之后自动加载） |
+| **第0步** | 配置 API Key（首次输入可保存，之后自动加载，模型名也一并保存） |
 | **第1步** | AI 分析项目 → 展示分析摘要（项目名建议、技术栈、重复代码） |
 | **第2步** | 生成重组计划 → 预览新目录结构和文件迁移方案 |
 | **第3步** | 确认计划 → 支持 Y/n/e（e = 编辑 plan.json 微调） |
-| **第4步** | 执行重组 → 模拟运行 → 确认 → 实际执行 |
-| **第5步** | 生成 README / .gitignore / requirements.txt → 打印 GitHub 指引 |
+| **第4步** | 执行重组 → 模拟运行 → 跳过大文件确认 → 实际执行 |
+| **第5步** | 生成 README / .gitignore / requirements.txt / 大文件清单 → 打印 GitHub 指引 |
 
 ### 高级用法：分模块单独运行
 
@@ -115,7 +117,40 @@ python restructure_project.py plan.json
 - **100 ~ 500 MB** — 强烈建议 Git LFS
 - **> 500 MB** — 建议不上传 Git，使用 DVC 或云存储
 
-你可以在 `.gitignore` 中排除不需要追踪的数据目录，或在 `.gitattributes` 中配置 LFS 规则。
+### ⏭️ 大文件自动跳过
+
+执行重组时，检测到的大文件**不会复制到新项目中**，而是由程序询问你是否跳过：
+
+```
+⏭️  检测到 3 个大文件/目录，将跳过复制并记录到 _LARGE_FILES_MANIFEST.md
+  是否跳过这些大文件？(Y/n): Y
+```
+
+跳过的文件会生成 **`_LARGE_FILES_MANIFEST.md`** 记录在新项目根目录，包含：
+
+| # | 原路径 | 大小 | 目标位置 |
+|---|--------|------|----------|
+| 1 | `data/model.pth` | 256 MB | `data/model.pth` |
+| 2 | `data/dataset.csv` | 128 MB | `data/raw/dataset.csv` |
+
+> 如果后续需要使用这些文件，可从原项目备份中复制回来。
+
+## 🔄 Git 上传助手
+
+每次更新代码后，可用 `git_helper.py` 交互式提交并推送：
+
+```bash
+# 交互式（显示变更 → 输入提交信息 → 选择是否推送）
+python git_helper.py
+
+# 快捷模式
+python git_helper.py -m "修复了 bug" --push
+
+# 只看变更，不操作
+python git_helper.py --dry-run
+```
+
+支持多行提交信息、自动 `git add --all`、推送前二次确认。
 
 ## ⚙️ 配置说明
 
@@ -144,11 +179,16 @@ python main.py  # 按提示输入即可
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 端点 |
 | `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 模型名称 |
 
+> 首次交互输入时，**模型名称也会一并保存**到 `config.json`，下次自动加载无需重复输入。
+
+> 模型名自动净化：粘贴终端内容时误带入的 ANSI 格式码（如 `deepseek-v4-pro[1m`）会被自动剥离，不会导致 API 调用失败。
+
 ## 🔒 安全说明
 
 - **API Key 仅保存在本地** `config.json`（文件权限 600，仅当前用户可读写）
 - **原项目会先备份**再重组，操作可逆
 - **所有 AI 调用**只发送代码片段（自适应读取：小文件全量发送、大文件按预算截断），不发送完整数据文件
+- **大文件（模型参数、数据集等）**默认不复制到新项目，更不会发给 AI
 - 不会向 GitHub 或第三方上传任何数据
 
 ## 📄 License

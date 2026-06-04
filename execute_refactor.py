@@ -4,10 +4,11 @@ execute_refactor.py
 备份与重组执行模块。
 
 功能:
-  1. backup_project()      - 创建原项目的时间戳备份
-  2. execute_restructure() - 按计划执行文件移动/复制/创建/删除
-  3. generate_git_files()  - 生成 .gitignore, .gitattributes
-  4. print_summary()       - 打印执行结果和 GitHub 上传指引
+  1. backup_project()             - 创建原项目的时间戳备份
+  2. execute_restructure()        - 按计划执行文件移动/复制/创建/删除
+  3. generate_large_files_manifest() - 记录未复制的大文件清单
+  4. generate_git_files()         - 生成 .gitignore, .gitattributes
+  5. print_summary()              - 打印执行结果和 GitHub 上传指引
 """
 
 import os
@@ -63,7 +64,8 @@ def backup_project(project_path: str,
 def execute_restructure(plan: dict,
                         source_path: str,
                         output_path: str,
-                        dry_run: bool = False) -> dict:
+                        dry_run: bool = False,
+                        skip_paths: set | None = None) -> dict:
     """
     按计划执行项目重组。
 
@@ -72,14 +74,19 @@ def execute_restructure(plan: dict,
         source_path: 原项目路径
         output_path: 输出项目路径
         dry_run: 如果 True，只打印不执行
+        skip_paths: 相对路径集合，匹配的文件会被跳过不复制（如大文件），
+                    改为生成记录清单 `_LARGE_FILES_MANIFEST.md`
 
     Returns:
-        执行统计: {"moved": int, "created": int, "deleted": int, "merged": int, "errors": int}
+        执行统计: {"moved": int, "created": int, "deleted": int,
+                   "merged": int, "skipped": int, "errors": int}
     """
     src_root = Path(source_path).resolve()
     out_root = Path(output_path).resolve()
-    stats = {"moved": 0, "created": 0, "deleted": 0, "merged": 0, "errors": 0}
+    skip_paths = skip_paths or set()
+    stats = {"moved": 0, "created": 0, "deleted": 0, "merged": 0, "skipped": 0, "errors": 0}
     errors_list = []
+    skipped_files = []  # 记录被跳过的文件信息
 
     if not dry_run:
         out_root.mkdir(parents=True, exist_ok=True)
@@ -91,18 +98,45 @@ def execute_restructure(plan: dict,
     print(f"目标目录: {out_root}")
     if dry_run:
         print("（模拟模式，不会实际改动文件）")
+    if skip_paths:
+        print(f"（排除 {len(skip_paths)} 个大文件/目录，将在清单中记录）")
     print()
 
     # ── 1. 创建目录结构 ──
     structure = plan.get("structure", {})
     _create_directory_structure(out_root, structure, dry_run)
 
-    # ── 2. 移动/复制文件 ──
+    # ── 2. 移动/复制文件（跳过匹配的大文件） ──
     file_moves = plan.get("file_moves", [])
     for move in file_moves:
         from_path = move.get("from", "")
         to_path = move.get("to", "")
         if not from_path or not to_path:
+            continue
+
+        # 检查是否在排除列表中
+        if _path_matches_skip(from_path, skip_paths):
+            if dry_run:
+                print(f"  ⏭️  {from_path}")
+                print(f"       ↳ 大文件，跳过复制（会在清单中记录）")
+            else:
+                print(f"  ⏭️  {from_path}")
+                print(f"       ↳ 大文件，跳过复制，已记录到 _LARGE_FILES_MANIFEST.md")
+            stats["skipped"] += 1
+            if not dry_run:
+                try:
+                    fsize = os.path.getsize(src_root / from_path)
+                    skipped_files.append({
+                        "path": from_path,
+                        "size_mb": round(fsize / 1024 / 1024, 2),
+                        "intended_target": to_path,
+                    })
+                except OSError:
+                    skipped_files.append({
+                        "path": from_path,
+                        "size_mb": "?",
+                        "intended_target": to_path,
+                    })
             continue
 
         src_file = src_root / from_path
@@ -211,7 +245,11 @@ def execute_restructure(plan: dict,
             exists = "✅" if full_path.exists() else "❌"
             print(f"   {exists} {d}")
 
-    # ── 6. 生成 __init__.py ──
+    # ── 6. 生成大文件记录清单 ──
+    if not dry_run and skipped_files:
+        _generate_large_files_manifest(out_root, skipped_files, str(src_root))
+
+    # ── 7. 生成 __init__.py ──
     if not dry_run:
         _ensure_init_files(out_root)
         print("  ✅  已补充各目录 __init__.py")
@@ -223,6 +261,8 @@ def execute_restructure(plan: dict,
         print(f"   移动/复制: {stats['moved']} 个文件")
         print(f"   创建新文件: {stats['created']} 个")
         print(f"   合并文件:   {stats['merged']} 组")
+        if stats['skipped']:
+            print(f"   跳过（大文件）: {stats['skipped']} 个（已记录到 _LARGE_FILES_MANIFEST.md）")
         if stats['errors']:
             print(f"   错误:       {stats['errors']} 个")
             for e in errors_list:
@@ -271,6 +311,92 @@ def _ensure_init_files(root: Path) -> None:
             if not init_file.exists():
                 with open(init_file, "w") as f:
                     f.write("# -*- coding: utf-8 -*-\n")
+
+
+# ── 大文件跳过辅助 ──────────────────────────────────────────────────
+
+
+def _path_matches_skip(relative_path: str, skip_paths: set) -> bool:
+    """
+    判断一个相对路径是否匹配跳过列表。
+
+    支持精确匹配和目录前缀匹配（如 "models/" 匹配 "models/weights.pt"）。
+    """
+    if relative_path in skip_paths:
+        return True
+    norm = relative_path.replace("\\", "/")
+    for sp in skip_paths:
+        sp_norm = sp.replace("\\", "/")
+        if sp_norm.endswith("/") and norm.startswith(sp_norm):
+            return True
+    return False
+
+
+# ── 大文件记录清单 ──────────────────────────────────────────────────
+
+
+_LARGE_MANIFEST_FILENAME = "_LARGE_FILES_MANIFEST.md"
+
+
+def _generate_large_files_manifest(out_root: Path,
+                                   skipped_files: list[dict],
+                                   source_path: str) -> None:
+    """
+    生成大文件记录清单 _LARGE_FILES_MANIFEST.md，记录所有被跳过的文件：
+    - 文件原路径、大小、重组计划中的目标位置
+    - 原项目备份路径
+    """
+    total_mb = 0
+    for f in skipped_files:
+        if isinstance(f.get("size_mb"), (int, float)):
+            total_mb += f["size_mb"]
+
+    lines = [
+        "# 🗄️ 大文件记录清单",
+        "",
+        "以下文件因体积较大，**未包含在重组后的项目中**。",
+        "如需使用，请从原项目备份中恢复。",
+        "",
+        "---",
+        "",
+        f"**原项目路径**: `{source_path}`",
+        f"**共 {len(skipped_files)} 个文件，合计约 {total_mb:.1f} MB**",
+        "",
+        "| # | 原路径 | 大小 | 目标位置（重组计划） |",
+        "|---|--------|------|---------------------|",
+    ]
+    for i, f in enumerate(skipped_files, 1):
+        size_str = f"{f['size_mb']} MB" if isinstance(f.get("size_mb"), (int, float)) else str(f["size_mb"])
+        lines.append(
+            f"| {i} | `{f['path']}` | {size_str} | `{f.get('intended_target', '?')}` |"
+        )
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 操作建议",
+        "",
+        "这些文件可以使用以下方式处理：",
+        "",
+        "1. **Git LFS** — 适合 50~500 MB 的二进制文件",
+        "   ```bash",
+        "   git lfs install",
+        "   git lfs track \"*.pkl\" \"*.h5\" \"*.pt\"",
+        "   ```",
+        "2. **DVC（数据版本控制）** — 适合大型数据集和模型文件",
+        r"   网站: https://dvc.org",
+        "3. **云存储** — 超过 500 MB 的文件建议使用云存储 + 代码中读取路径配置",
+        "4. **手动恢复** — 从备份目录复制回对应位置",
+        "",
+        f"> 备份路径: `{source_path}` （原项目或备份目录）",
+        "",
+    ])
+
+    manifest_path = out_root / _LARGE_MANIFEST_FILENAME
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"  📄 大文件记录清单: {_LARGE_MANIFEST_FILENAME}")
 
 
 # ── 生成 Git 配置 ──────────────────────────────────────────────────
@@ -387,6 +513,7 @@ def print_github_guide(output_path: str, plan: dict) -> None:
 def print_summary(output_path: str, plan: dict, stats: dict) -> None:
     """打印最终摘要"""
     name = plan.get("project_name", "unknown")
+    skipped = stats.get("skipped", 0)
 
     print("\n" + "★" * 60)
     print(f"🎉  重组完成！")
@@ -396,8 +523,10 @@ def print_summary(output_path: str, plan: dict, stats: dict) -> None:
   📂 位置:    {output_path}
   📄 移动文件: {stats.get('moved', 0)} 个
   🆕 创建文件: {stats.get('created', 0)} 个
-  🔗 合并文件: {stats.get('merged', 0)} 组
-  ❌ 错误:    {stats.get('errors', 0)} 个
+  🔗 合并文件: {stats.get('merged', 0)} 组""")
+    if skipped:
+        print(f"  ⏭️  大文件跳过: {skipped} 个（见 _LARGE_FILES_MANIFEST.md）")
+    print(f"""  ❌ 错误:    {stats.get('errors', 0)} 个
 
 请检查输出目录，确认结构正确后上传 GitHub。
 """)

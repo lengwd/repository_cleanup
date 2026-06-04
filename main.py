@@ -181,6 +181,20 @@ def main():
             print(f"   📄 {f['path']}: {f['size_mb']} MB {f['suggestion']}")
     project_info["large_data_info"] = "\n".join(large_info_parts) if large_info_parts else "无"
 
+    # 收集需要跳过的大文件/目录（不复制到新项目，改记录到清单）
+    large_skip_paths: set[str] = set()
+    for f in large_files:
+        large_skip_paths.add(f["path"])
+    for d in large_dirs:
+        large_skip_paths.add(d["path"] + "/")  # 带 / 后缀，做前缀匹配
+    if large_skip_paths:
+        print(f"\n⏭️  检测到 {len(large_skip_paths)} 个大文件/目录，"
+              f"将跳过复制并记录到 _LARGE_FILES_MANIFEST.md")
+        skip_confirm = input("  是否跳过这些大文件？(Y/n): ").strip().lower()
+        if skip_confirm == "n":
+            large_skip_paths = set()
+            print("   ⏩ 不跳过，将全部复制到新项目")
+
     # ── 3. 输出名称 ──
     default_name = os.path.basename(project_path).replace(" ", "-").lower()
     output_name = prompt_output_name(default_name)
@@ -276,12 +290,16 @@ def main():
 
     # 模拟运行
     print("\n🔍 模拟运行（预览改动，不实际操作）...")
-    stats_dry = execute_restructure(plan, project_path, output_path, dry_run=True)
+    stats_dry = execute_restructure(plan, project_path, output_path,
+                                       dry_run=True,
+                                       skip_paths=large_skip_paths)
 
     print(f"\n模拟完成，预计:")
     print(f"   移动/复制: {stats_dry['moved']} 个文件")
     print(f"   创建新文件: {stats_dry['created']} 个")
     print(f"   合并文件:   {stats_dry['merged']} 组")
+    if stats_dry.get('skipped'):
+        print(f"   跳过（大文件）: {stats_dry['skipped']} 个")
 
     final_confirm = input("\n确认执行以上操作？(Y/n): ").strip().lower()
     if final_confirm == "n":
@@ -290,7 +308,9 @@ def main():
             print(f"💾 原项目备份位于: {backup_path}")
         sys.exit(0)
 
-    stats = execute_restructure(plan, project_path, output_path, dry_run=False)
+    stats = execute_restructure(plan, project_path, output_path,
+                                   dry_run=False,
+                                   skip_paths=large_skip_paths)
 
     # ── 9. 生成文档和配置 ──
     print("\n" + "=" * 60)
