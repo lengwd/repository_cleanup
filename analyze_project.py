@@ -221,32 +221,72 @@ def _suggest_for_size(size_mb: float) -> str:
 def analyze_with_ai(project_info: dict,
                     api_key: str,
                     base_url: str = "https://api.deepseek.com",
-                    model: str = "deepseek-v4-pro") -> str:
+                    model: str = "deepseek-v4-pro",
+                    max_chars: int = 100000) -> str:
     """
     将项目信息发给 DeepSeek，获取架构分析结果。
 
-    返回 AI 的原始回复文本（含 JSON）。
+    自适应读取：
+      在 max_chars 字符预算内，按文件行数升序（小文件优先）读取，
+      预算够则全量读取，预算不够则截断当前文件并停止。
+      这样小项目可以读到全部代码，大项目也能在预算内覆盖最多文件。
+
+    Returns:
+        AI 的原始回复文本（含 JSON）。
     """
     client = OpenAI(api_key=api_key, base_url=base_url)
 
-    # 构造文件摘要（每个 .py 文件最多取前 60 行）
     py_files = project_info["python_files"]
     file_summary_parts = []
-    for f in py_files[:30]:  # 最多 30 个文件，避免 token 超限
+    remaining = max_chars
+
+    # 按行数升序排列（小文件优先），在预算内覆盖尽可能多的文件
+    for f in sorted(py_files, key=lambda x: x["lines"]):
+        if remaining <= 0:
+            break
+
         fpath = os.path.join(project_info["project_path"], f["path"])
         try:
             with open(fpath, "r", encoding="utf-8", errors="ignore") as fp:
                 content = fp.read()
         except OSError:
             content = ""
-        lines = content.split("\n")
-        snippet = "\n".join(lines[:60])
-        file_summary_parts.append(
-            f"\n### 文件: {f['path']} ({f['lines']} 行, {f['size_kb']} KB)\n"
-            f"```python\n{snippet}\n```"
-        )
+
+        header = f"\n### 文件: {f['path']} ({f['lines']} 行, {f['size_kb']} KB)\n```python\n"
+        footer = "\n```"
+        overhead = len(header) + len(footer)
+
+        if overhead >= remaining:
+            # 连 header 都放不下了，跳过
+            continue
+
+        if overhead + len(content) <= remaining:
+            # 预算充足 → 全量读取
+            snippet = content
+            remaining -= overhead + len(content)
+        else:
+            # 预算不够完整文件 → 截断，读完本次就结束
+            available = remaining - overhead
+            lines = content.split("\n")
+            snippet_lines = []
+            char_count = 0
+            for line in lines:
+                take = len(line) + 1  # +1 for newline
+                if char_count + take > available:
+                    break
+                snippet_lines.append(line)
+                char_count += take
+            omitted = len(lines) - len(snippet_lines)
+            snippet = "\n".join(snippet_lines)
+            if omitted > 0:
+                snippet += f"\n# ... (省略 {omitted} 行)"
+            remaining = 0
+
+        file_summary_parts.append(f"{header}{snippet}{footer}")
 
     file_summary = "\n".join(file_summary_parts)
+    print(f"  📖 已读取 {len(file_summary_parts)}/{len(py_files)} 个 Python 文件"
+          f"（字符预算 {max_chars:,}，已用 {max_chars - remaining:,}）")
     dir_tree = project_info.get("dir_tree", "")
     large_data = project_info.get("large_data_info", "无")
 
@@ -330,9 +370,17 @@ def analyze_with_ai(project_info: dict,
 def analyze_project(project_path: str,
                     api_key: str,
                     base_url: str = "https://api.deepseek.com",
-                    model: str = "deepseek-v4-pro") -> tuple[dict, dict, str]:
+                    model: str = "deepseek-v4-pro",
+                    max_chars: int = 100000) -> tuple[dict, dict, str]:
     """
-    扫描 + 大目录检测 + AI 分析。
+    扫描 + 大目录检测 + AI 分析（自适应读取）。
+
+    Args:
+        project_path: 项目路径
+        api_key: API 密钥
+        base_url: API 地址
+        model: 模型名
+        max_chars: 代码读取的字符预算（默认 100k，小项目可全量读取）
 
     Returns:
         (project_info, large_items, ai_reply)
@@ -362,8 +410,8 @@ def analyze_project(project_path: str,
 
     project_info["large_data_info"] = "\n".join(large_info_parts) if large_info_parts else "无"
 
-    print(f"\n🤖 AI 分析中（{model}）...")
-    ai_reply = analyze_with_ai(project_info, api_key, base_url, model)
+    print(f"\n🤖 AI 分析中（{model}，代码字符预算 {max_chars:,}）...")
+    ai_reply = analyze_with_ai(project_info, api_key, base_url, model, max_chars)
     print("   ✅ AI 分析完成")
 
     large_items = {
