@@ -43,6 +43,7 @@ from analyze_project import (
     analyze_with_ai,
     detect_large_dirs,
     detect_large_files,
+    analyze_large_files_deep,
 )
 from restructure_project import (
     generate_plan,
@@ -180,6 +181,67 @@ def main():
             large_info_parts.append(f"大文件: {f['path']} = {f['size_mb']} MB")
             print(f"   📄 {f['path']}: {f['size_mb']} MB {f['suggestion']}")
     project_info["large_data_info"] = "\n".join(large_info_parts) if large_info_parts else "无"
+
+    # ── 大数据深度分析：分类 + 可下载识别 + checkpoint 瘦身 ──
+    if large_files:
+        print("\n🔬 大数据深度分析...")
+        deep_analysis = analyze_large_files_deep(large_files, project_path)
+
+        # 按类别分组展示
+        dl_items = [f for f in deep_analysis if f.get("is_downloadable")]
+        ckpt_items = [f for f in deep_analysis
+                      if f.get("category") == "checkpoint"]
+
+        # 展示可下载文件的识别结果
+        if dl_items:
+            print(f"\n  📥 可下载文件（可从原地址重新下载，建议删除）:")
+            for f in dl_items:
+                print(f"    · {f['path']}")
+                print(f"      ↗ 来源: {f['download_name']}")
+                print(f"      🔗 {f['download_source']}")
+            dl_confirm = input("\n  是否删除这些可下载的文件？(y/N): ").strip().lower()
+            if dl_confirm == "y":
+                _delete_with_confirm(project_path, dl_items,
+                                     "这些文件可从原地址重新下载")
+
+        # 展示 checkpoint 分析结果
+        if ckpt_items:
+            print(f"\n  💾 CheckPoint 分析（共 {len(ckpt_items)} 个文件）:")
+            groups = {}
+            for f in ckpt_items:
+                g = f.get("is_checkpoint_group", "/")
+                groups.setdefault(g, []).append(f)
+
+            total_delete_candidates = []
+            for g, files in sorted(groups.items()):
+                deletable = [f for f in files if not f.get("is_checkpoint_keeper")]
+                print(f"\n    📂 {g}/")
+                for f in files:
+                    tag = " "
+                    if f.get("is_checkpoint_keeper"):
+                        tag = "✅ 保留"
+                    else:
+                        tag = "🗑️ 可删"
+                    print(f"      {tag}  {os.path.basename(f['path'])}  ({f['size_mb']} MB)")
+                if deletable:
+                    total_delete_candidates.extend(deletable)
+
+            if total_delete_candidates:
+                ckpt_confirm = input(
+                    f"\n  是否删除以上标记为可删的 {len(total_delete_candidates)} 个 checkpoint？"
+                    f"（仅保留每组最优/最新的）(y/N): "
+                ).strip().lower()
+                if ckpt_confirm == "y":
+                    _delete_with_confirm(project_path, total_delete_candidates,
+                                         "只保留每组最优/最新的 checkpoint")
+
+        # 如果两者都没有，只展示分类摘要
+        if not dl_items and not ckpt_items:
+            categories = {}
+            for f in deep_analysis:
+                cat = f.get("category_desc", "其他")
+                categories[cat] = categories.get(cat, 0) + 1
+            print(f"    分类结果: {', '.join(f'{k} {v}个' for k, v in categories.items())}")
 
     # 收集需要跳过的大文件/目录（不复制到新项目，改记录到清单）
     large_skip_paths: set[str] = set()
@@ -365,6 +427,62 @@ def main():
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  辅助：交互式文件删除
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _delete_with_confirm(project_path: str,
+                          files_to_delete: list[dict],
+                          reason: str) -> None:
+    """
+    交互式删除文件，每个文件逐个确认。
+
+    Args:
+        project_path: 项目根路径
+        files_to_delete: 文件信息列表，每项含 path、size_mb
+        reason: 删除原因说明
+    """
+    print(f"\n  🗑️  准备删除以下文件（原因: {reason}）:")
+    print(f"  {'=' * 50}")
+
+    deleted = 0
+    skipped = 0
+    total = len(files_to_delete)
+
+    for i, f in enumerate(files_to_delete, 1):
+        fpath = Path(project_path) / f["path"]
+        if not fpath.exists():
+            print(f"  [{i}/{total}] ⏭️  文件不存在: {f['path']}")
+            skipped += 1
+            continue
+
+        fsize = f.get("size_mb", "?")
+        print(f"\n  [{i}/{total}] 📄 {f['path']} ({fsize} MB)")
+
+        # 如果可下载，显示下载来源
+        if f.get("download_source"):
+            print(f"      ↗ 可从 {f['download_name']} 重新下载")
+
+        choice = input(f"      删除此文件？(Y/n/s=跳过全部): ").strip().lower()
+        if choice == "s":
+            print(f"      ⏭️  跳过剩余所有文件")
+            remaining = total - i + 1
+            skipped += remaining
+            break
+        elif choice == "n":
+            print(f"      ⏭️  跳过")
+            skipped += 1
+        else:
+            try:
+                fpath.unlink()
+                print(f"      ✅ 已删除")
+                deleted += 1
+            except OSError as e:
+                print(f"      ❌ 删除失败: {e}")
+
+    print(f"\n  📊 删除结果: {deleted} 个已删除, {skipped} 个跳过")
+    if deleted > 0:
+        print(f"  💡 如需恢复，可从原备份中找回")
 #  辅助：检测依赖并生成 requirements.txt
 # ═══════════════════════════════════════════════════════════════════
 

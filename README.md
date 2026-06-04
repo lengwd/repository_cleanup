@@ -23,6 +23,7 @@
 |------|------|
 | 🔍 **自动扫描** | 遍历目录，统计 Python 文件、行数、大小 |
 | 📦 **大文件检测** | 自动识别大目录/大文件（>10MB/50MB），给出 Git LFS 建议 |
+| 🔬 **大数据深度分析** | 分类识别（checkpoint/模型/数据集）、匹配可下载来源、checkpoint 只保留最优/最新 |
 | ⏭️ **大文件自动跳过** | 模型参数、数据集等大文件不复制到新项目，生成 `_LARGE_FILES_MANIFEST.md` 记录清单 |
 | 🤖 **AI 架构分析** | DeepSeek 分析代码，识别重复、建议重组方案（自适应读取，小文件全量读、大文件智能截断） |
 | 📋 **重组计划生成** | AI 规划新目录结构 + 文件迁移映射 |
@@ -35,9 +36,9 @@
 
 ```
 github-ready-重构工具/
-├── main.py                    🎯 主入口 — 交互式 CLI，一键走完完整流程
+├── main.py                    🎯 主入口 — 交互式 CLI，含大数据深度分析和交互式删除
 ├── config.py                  🔑 配置管理 — API Key/模型（环境变量 > config.json > 交互输入）
-├── analyze_project.py         🔍 项目扫描与 AI 分析（自适应读取）
+├── analyze_project.py         🔍 项目扫描 + AI 分析 + 大文件深度分类/可下载识别/checkpoint 瘦身
 ├── restructure_project.py     📋 重组计划生成与展示确认
 ├── execute_refactor.py        🛠️ 备份与重组执行引擎（大文件自动跳过 + 清单记录）
 ├── generate_readme.py         📝 README.md 自动生成
@@ -116,6 +117,41 @@ python restructure_project.py plan.json
 - **50 ~ 100 MB** — 建议使用 Git LFS
 - **100 ~ 500 MB** — 强烈建议 Git LFS
 - **> 500 MB** — 建议不上传 Git，使用 DVC 或云存储
+
+### 🔬 大数据深度分析
+
+检测到大文件后，工具会对每个文件做深度分析：
+
+1. **文件分类** — 自动识别文件类型（checkpoint / 预训练模型 / 数据集 / 媒体 / 其他）
+2. **可下载匹配** — 识别已知的预训练模型和数据集（ResNet, BERT, LLaMA, COCO, MNIST 等 30+ 种），标注来源 URL
+3. **Checkpoint 瘦身** — 同一目录下的 checkpoint 按文件名分析，只保留含 `best`/`final`/`latest` 或编号最大的，标记多余的为可删除
+
+分类展示效果：
+```
+📥 可下载文件（可从原地址重新下载，建议删除）:
+  · models/resnet50.pth
+    ↗ 来源: ResNet 预训练模型
+    🔗 https://pytorch.org/vision/stable/models.html
+
+💾 CheckPoint 分析（共 5 个文件）:
+  📂 checkpoints/
+    ✅ 保留  best_model.ckpt  (120 MB)
+    🗑️ 可删  epoch_10.ckpt   (120 MB)
+    🗑️ 可删  epoch_20.ckpt   (120 MB)
+    🗑️ 可删  epoch_30.ckpt   (120 MB)
+```
+
+### 🗑️ 交互式文件删除
+
+对于可下载文件和冗余 checkpoint，会逐个与你确认后删除：
+
+```
+  [1/3] 📄 models/resnet50.pth (100 MB)
+      ↗ 可从 ResNet 预训练模型 重新下载
+      删除此文件？(Y/n/s=跳过全部):
+```
+
+> 删除仅在原项目上执行。如果已创建备份，随时可恢复。
 
 ### ⏭️ 大文件自动跳过
 

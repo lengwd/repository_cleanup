@@ -215,6 +215,224 @@ def _suggest_for_size(size_mb: float) -> str:
     return "📁 较大，考虑是否需要上传"
 
 
+# ── 大文件深度分类 ──────────────────────────────────────────────────
+
+# 扩展名 → (类别标签, 中文描述)
+_FILE_CATEGORIES = {
+    # 模型检查点
+    ".ckpt":        ("checkpoint", "模型检查点"),
+    ".pt":          ("checkpoint", "PyTorch 模型权重"),
+    ".pth":         ("checkpoint", "PyTorch 模型权重"),
+    ".safetensors": ("checkpoint", "SafeTensors 模型权重"),
+    ".bin":         ("checkpoint", "模型权重 (常见于 HuggingFace)"),
+    # 训练好的模型文件
+    ".pkl":         ("model",     "序列化模型/对象"),
+    ".h5":          ("model",     "HDF5 模型/数据"),
+    ".hdf5":        ("model",     "HDF5 模型/数据"),
+    ".keras":       ("model",     "Keras 模型"),
+    ".tflite":      ("model",     "TFLite 模型"),
+    ".onnx":        ("model",     "ONNX 模型"),
+    ".pb":          ("model",     "TensorFlow 模型"),
+    # 数据集
+    ".csv":         ("dataset",   "CSV 数据"),
+    ".jsonl":       ("dataset",   "JSONL 数据"),
+    ".parquet":     ("dataset",   "Parquet 数据"),
+    ".npy":         ("dataset",   "NumPy 数组"),
+    ".npz":         ("dataset",   "NumPy 压缩数据"),
+    ".tfrecord":    ("dataset",   "TFRecord 数据"),
+    ".arrow":       ("dataset",   "Arrow 数据 (常见于 HuggingFace Datasets)"),
+    # 媒体文件
+    ".jpg":         ("media",     "图片"),
+    ".jpeg":        ("media",     "图片"),
+    ".png":         ("media",     "图片"),
+    ".mp4":         ("media",     "视频"),
+    ".avi":         ("media",     "视频"),
+    ".wav":         ("media",     "音频"),
+    ".mp3":         ("media",     "音频"),
+}
+
+# 已知可下载的模型/数据集 → 下载来源
+_KNOWN_DOWNLOADS = [
+    # (文件名/路径片段, 名称, 下载来源)
+    ("pytorch_model.bin",      "HuggingFace 预训练模型",    "https://huggingface.co/"),
+    ("model.safetensors",      "HuggingFace 预训练模型",    "https://huggingface.co/"),
+    ("tf_model.h5",            "HuggingFace 预训练模型",    "https://huggingface.co/"),
+    ("resnet",                 "ResNet 预训练模型",         "https://pytorch.org/vision/stable/models.html"),
+    ("resnext",                "ResNeXt 预训练模型",        "https://pytorch.org/vision/stable/models.html"),
+    ("vgg",                    "VGG 预训练模型",            "https://pytorch.org/vision/stable/models.html"),
+    ("vit",                    "ViT 预训练模型",            "https://huggingface.co/models"),
+    ("yolo",                   "YOLO 模型",                 "https://github.com/ultralytics/ultralytics"),
+    ("bert",                   "BERT 预训练模型",           "https://huggingface.co/google-bert"),
+    ("gpt2",                   "GPT-2 预训练模型",          "https://huggingface.co/gpt2"),
+    ("gpt",                    "GPT 预训练模型",            "https://huggingface.co/openai-gpt"),
+    ("llama",                  "LLaMA 预训练模型",          "https://huggingface.co/meta-llama"),
+    ("whisper",                "Whisper 模型",              "https://github.com/openai/whisper"),
+    ("clip",                   "CLIP 模型",                 "https://huggingface.co/openai/clip-vit-base-patch32"),
+    ("sam",                    "SAM 分割模型",              "https://github.com/facebookresearch/sam"),
+    ("coco",                   "COCO 数据集",               "https://cocodataset.org/"),
+    ("imagenet",               "ImageNet 数据集",           "https://www.image-net.org/"),
+    ("mnist",                  "MNIST 数据集",              "https://yann.lecun.com/exdb/mnist/"),
+    ("cifar10",                "CIFAR-10 数据集",           "https://www.cs.toronto.edu/~kriz/cifar.html"),
+    ("cifar100",               "CIFAR-100 数据集",          "https://www.cs.toronto.edu/~kriz/cifar.html"),
+    ("squad",                  "SQuAD 数据集",              "https://rajpurkar.github.io/SQuAD-explorer/"),
+    ("glove",                  "GloVe 词向量",              "https://nlp.stanford.edu/projects/glove/"),
+    ("word2vec",               "Word2Vec 词向量",           "https://code.google.com/archive/p/word2vec/"),
+    ("efficientnet",           "EfficientNet 预训练模型",   "https://pytorch.org/vision/stable/models.html"),
+    ("mobilenet",              "MobileNet 预训练模型",      "https://pytorch.org/vision/stable/models.html"),
+    ("densenet",               "DenseNet 预训练模型",       "https://pytorch.org/vision/stable/models.html"),
+    ("inception",              "Inception 预训练模型",      "https://pytorch.org/vision/stable/models.html"),
+    ("unet",                   "UNet 模型",                 "https://github.com/milesial/Pytorch-UNet"),
+    ("swin",                   "Swin Transformer 模型",     "https://github.com/microsoft/Swin-Transformer"),
+]
+
+
+def classify_large_file(file_info: dict, project_path: str) -> dict:
+    """
+    对单个大文件进行深度分类分析。
+
+    Returns:
+        在 file_info 基础上补充:
+        - category: 类别标签 (checkpoint / model / dataset / media / other)
+        - category_desc: 中文描述
+        - is_downloadable: 是否可以从网上下载
+        - download_name: 可下载对象的名称
+        - download_source: 下载来源 URL
+        - is_checkpoint_group: checkpoint 所属组名 (None 表示不是 checkpoint)
+        - is_checkpoint_keeper: 是否为该组应保留的 checkpoint
+    """
+    name = os.path.basename(file_info["path"])
+    ext = os.path.splitext(name)[1].lower()
+    full_path = file_info["path"].replace("\\", "/")
+
+    result = dict(file_info)  # 浅拷贝
+    result["category"] = "other"
+    result["category_desc"] = "其他文件"
+    result["is_downloadable"] = False
+    result["download_name"] = None
+    result["download_source"] = None
+    result["is_checkpoint_group"] = None
+    result["is_checkpoint_keeper"] = None
+
+    # 1. 按扩展名分类
+    if ext in _FILE_CATEGORIES:
+        cat, desc = _FILE_CATEGORIES[ext]
+        result["category"] = cat
+        result["category_desc"] = desc
+    else:
+        # 通过文件名模式猜测
+        lower = name.lower()
+        if any(kw in lower for kw in ["checkpoint", "epoch", "model_", "weight"]):
+            result["category"] = "checkpoint"
+            result["category_desc"] = "模型检查点 (按名称推测)"
+
+    # 2. 检查是否是已知可下载的模型/数据集
+    norm_path = full_path.lower()
+    for fragment, dname, source in _KNOWN_DOWNLOADS:
+        if fragment in norm_path:
+            result["is_downloadable"] = True
+            result["download_name"] = dname
+            result["download_source"] = source
+            break
+
+    return result
+
+
+def analyze_checkpoints(classified_files: list[dict]) -> list[dict]:
+    """
+    对 checkpoint 类文件分组分析，标记哪些应保留。
+
+    分组规则：按目录分组 + 按文件名校验。
+    保留规则：名字含 best / final / latest 的保留；
+              有 epoch/step 编号的只保留编号最大的；
+              单文件组直接保留。
+    """
+    # 过滤出 checkpoint，按目录分组
+    ckpt_groups: dict[str, list[dict]] = {}
+    for f in classified_files:
+        if f.get("category") != "checkpoint":
+            continue
+        path = f["path"].replace("\\", "/")
+        group_key = os.path.dirname(path) or "/"
+        ckpt_groups.setdefault(group_key, []).append(f)
+
+    # 对每组进行分析
+    for group_dir, files in ckpt_groups.items():
+        if len(files) == 1:
+            # 单文件 → 总是保留
+            files[0]["is_checkpoint_group"] = group_dir
+            files[0]["is_checkpoint_keeper"] = True
+            continue
+
+        # 多文件 → 识别 keepers
+        keepers: set[int] = set()
+        seen_names = set()
+
+        for i, f in enumerate(files):
+            fname = os.path.basename(f["path"]).lower()
+            f["is_checkpoint_group"] = group_dir
+
+            # 命名包含 best / final / latest → 保留
+            if any(kw in fname for kw in ["best", "final", "latest"]):
+                keepers.add(i)
+
+        # 按编号模式找最大号（epoch_*, step_*, checkpoint-*）
+        import re
+        epoch_groups: dict[str, list[tuple[int, int]]] = {}
+        for i, f in enumerate(files):
+            if i in keepers:
+                continue
+            fname = os.path.basename(f["path"]).lower()
+            # 匹配 epoch_N / step_N / checkpoint-N / _N.ckpt 等
+            for pattern in [
+                r"epoch[_\s]*(\d+)", r"step[_\s]*(\d+)",
+                r"checkpoint[_\s-]*(\d+)", r"_(\d+)\.\w+$",
+            ]:
+                m = re.search(pattern, fname)
+                if m:
+                    num = int(m.group(1))
+                    base = re.sub(r"_\d+", "_XX", fname, count=1)
+                    epoch_groups.setdefault(base, []).append((num, i))
+                    break
+
+        # 每组编号只保留最大的
+        for base, entries in epoch_groups.items():
+            entries.sort(key=lambda x: x[0], reverse=True)
+            keepers.add(entries[0][1])  # 最大号保留
+
+        # 如果 keepers 为空 → 全部保留（安全兜底）
+        if not keepers:
+            keepers = set(range(len(files)))
+
+        for i, f in enumerate(files):
+            f["is_checkpoint_keeper"] = i in keepers
+
+    return classified_files
+
+
+def analyze_large_files_deep(large_files: list[dict],
+                             project_path: str) -> list[dict]:
+    """
+    对大文件列表进行深度分析：分类、识别可下载项、分析 checkpoint。
+
+    Args:
+        large_files: detect_large_files() 的结果
+        project_path: 项目路径
+
+    Returns:
+        经过 enrich 的文件列表，每项新增:
+        category, category_desc, is_downloadable,
+        download_name, download_source,
+        is_checkpoint_group, is_checkpoint_keeper
+    """
+    # 第一步：逐个分类
+    classified = [classify_large_file(f, project_path) for f in large_files]
+
+    # 第二步：checkpoint 分组分析
+    classified = analyze_checkpoints(classified)
+
+    return classified
+
+
 # ── AI 分析 ───────────────────────────────────────────────────────
 
 
