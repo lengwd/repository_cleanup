@@ -24,7 +24,7 @@ def generate_plan(analysis_text: str,
                   output_name: str,
                   api_key: str,
                   base_url: str = "https://api.deepseek.com",
-                  model: str = "deepseek-chat") -> dict:
+                  model: str = "deepseek-v4-pro") -> dict:
     """
     将 AI 分析结果 + 用户指定的输出名 → DeepSeek 生成详细重组计划。
 

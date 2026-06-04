@@ -12,9 +12,23 @@ config.py
 
 import os
 import json
+import re
 from pathlib import Path
 
 CONFIG_FILE = Path(__file__).parent / "config.json"
+
+# ANSI 转义码（如 \x1b[1m 加粗）正则，避免模型名被终端格式污染
+_ANSI_STRIP = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+# 也清理常见的残留片段，如 "[1m"、"0m"（当 \x1b 已被剥离时）
+_RESIDUAL_STRIP = re.compile(r"\[\d+(?:;\d+)*m")
+
+
+def _sanitize_model(model: str) -> str:
+    """净化模型名：剥离 ANSI 转义码及残留的 `[1m` 类片段"""
+    model = _ANSI_STRIP.sub("", model)
+    model = _RESIDUAL_STRIP.sub("", model)
+    return model.strip()
 
 
 def get_api_key() -> str | None:
@@ -47,8 +61,10 @@ def get_base_url() -> str:
     return "https://api.deepseek.com"
 
 
-def save_config(api_key: str, base_url: str = "https://api.deepseek.com") -> None:
-    """将 API Key 保存到 config.json（仅本地文件权限）"""
+def save_config(api_key: str,
+                base_url: str = "https://api.deepseek.com",
+                model: str | None = None) -> None:
+    """将 API 配置保存到 config.json（仅本地文件权限）"""
     cfg = {}
     if CONFIG_FILE.exists():
         try:
@@ -58,6 +74,8 @@ def save_config(api_key: str, base_url: str = "https://api.deepseek.com") -> Non
             pass
     cfg["api_key"] = api_key
     cfg["base_url"] = base_url
+    if model:
+        cfg["model"] = model
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
     # 仅当前用户可读写
@@ -69,8 +87,25 @@ def save_config(api_key: str, base_url: str = "https://api.deepseek.com") -> Non
 
 
 def get_model() -> str:
-    """获取模型名称"""
-    return os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    """
+    获取模型名称（自动净化，剥离 ANSI 转义码）。
+
+    优先级：环境变量 > config.json > 默认值 "deepseek-v4-pro"
+    """
+    raw = os.environ.get("DEEPSEEK_MODEL")
+    if raw:
+        return _sanitize_model(raw)
+    # 从 config.json 读取
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE) as f:
+                cfg = json.load(f)
+            raw = cfg.get("model")
+            if raw:
+                return _sanitize_model(raw)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return "deepseek-v4-pro"
 
 
 def get_or_prompt_api_key() -> tuple[str, str, str]:
@@ -100,11 +135,10 @@ def get_or_prompt_api_key() -> tuple[str, str, str]:
             url_input = input(f"Base URL [回车默认 {base_url}]: ").strip()
             if url_input:
                 base_url = url_input
-            save_config(api_key, base_url)
-
-        model_input = input(f"模型名称 [回车默认 {model}]: ").strip()
-        if model_input:
-            model = model_input
+            model_input = input(f"模型名称 [回车默认 {model}]: ").strip()
+            if model_input:
+                model = _sanitize_model(model_input)
+            save_config(api_key, base_url, model)
     else:
         print(f"🔑 已加载 API Key (端点: {base_url})")
 

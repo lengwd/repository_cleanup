@@ -18,7 +18,7 @@ def generate_readme(project_path: str,
                     project_info: dict | None = None,
                     api_key: str | None = None,
                     base_url: str = "https://api.deepseek.com",
-                    model: str = "deepseek-chat") -> str:
+                    model: str = "deepseek-v4-pro") -> str:
     """
     为重组后的项目生成 README.md 内容。
 
@@ -168,7 +168,7 @@ def generate_and_save(project_path: str,
                        description: str,
                        api_key: str | None = None,
                        base_url: str = "https://api.deepseek.com",
-                       model: str = "deepseek-chat") -> Path:
+                       model: str = "deepseek-v4-pro") -> Path:
     """便捷函数：生成并保存 README"""
     content = generate_readme(
         project_path=project_path,
