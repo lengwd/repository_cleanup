@@ -44,6 +44,7 @@ from analyze_project import (
     detect_large_dirs,
     detect_large_files,
     analyze_large_files_deep,
+    MAX_CHARS,
 )
 from restructure_project import (
     generate_plan,
@@ -299,7 +300,7 @@ def main():
     print("🔍 第1步：AI 分析项目架构")
     print("=" * 60)
     print(f"🤖 调用 {model} 进行架构分析（这需要一些时间）...")
-    ai_reply = analyze_with_ai(project_info, api_key, base_url, model)
+    ai_reply = analyze_with_ai(project_info, api_key, base_url, model, max_chars=MAX_CHARS)
 
     # 显示分析结果摘要
     ai_json = None

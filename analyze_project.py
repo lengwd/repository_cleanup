@@ -26,6 +26,8 @@ EXCLUDE_EXTENSIONS = {".pyc", ".pyo", ".so", ".dll", ".dylib"}
 LARGE_DIR_THRESHOLD_MB = 50
 # 大文件阈值（MB）
 LARGE_FILE_THRESHOLD_MB = 10
+# AI 分析代码读取字符预算（默认 300k，约覆盖 100+ 个文件各读一部分）
+MAX_CHARS = 300000
 
 
 # ── 扫描 ──────────────────────────────────────────────────────────
@@ -440,7 +442,7 @@ def analyze_with_ai(project_info: dict,
                     api_key: str,
                     base_url: str = "https://api.deepseek.com",
                     model: str = "deepseek-v4-pro",
-                    max_chars: int = 100000) -> str:
+                    max_chars: int = 300000) -> str:
     """
     将项目信息发给 DeepSeek，获取架构分析结果。
 
@@ -633,7 +635,7 @@ def analyze_project(project_path: str,
                     api_key: str,
                     base_url: str = "https://api.deepseek.com",
                     model: str = "deepseek-v4-pro",
-                    max_chars: int = 100000) -> tuple[dict, dict, str]:
+                    max_chars: int = 300000) -> tuple[dict, dict, str]:
     """
     扫描 + 大目录检测 + AI 分析（自适应读取）。
 
@@ -642,7 +644,7 @@ def analyze_project(project_path: str,
         api_key: API 密钥
         base_url: API 地址
         model: 模型名
-        max_chars: 代码读取的字符预算（默认 100k，小项目可全量读取）
+        max_chars: 代码读取的字符预算（默认 300k，全量读完 100+ 文件也绰绰有余）
 
     Returns:
         (project_info, large_items, ai_reply)
