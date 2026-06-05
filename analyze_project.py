@@ -445,9 +445,10 @@ def analyze_with_ai(project_info: dict,
     将项目信息发给 DeepSeek，获取架构分析结果。
 
     自适应读取：
-      在 max_chars 字符预算内，按文件行数升序（小文件优先）读取，
-      预算够则全量读取，预算不够则截断当前文件并停止。
-      这样小项目可以读到全部代码，大项目也能在预算内覆盖最多文件。
+      两阶段策略：
+        阶段1 — 小文件优先全量读取
+        阶段2 — 如果全量读不完，剩余预算在所有未读文件之间平分，
+                确保每个文件至少贡献开头若干行，让 AI 看到全貌。
 
     Returns:
         AI 的原始回复文本（含 JSON）。
@@ -455,14 +456,25 @@ def analyze_with_ai(project_info: dict,
     client = OpenAI(api_key=api_key, base_url=base_url)
 
     py_files = project_info["python_files"]
-    file_summary_parts = []
+    file_summary_parts: list[str] = []
     remaining = max_chars
 
-    # 按行数升序排列（小文件优先），在预算内覆盖尽可能多的文件
-    for f in sorted(py_files, key=lambda x: x["lines"]):
-        if remaining <= 0:
-            break
+    # 按行数升序排列（小文件优先）
+    sorted_files = sorted(py_files, key=lambda x: x["lines"])
 
+    # ── 阶段1：小文件优先全量读取 ──
+    pending = []  # 未读文件索引（阶段2处理）
+    for idx, f in enumerate(sorted_files):
+        header = (f"\n### 文件: {f['path']} ({f['lines']} 行, {f['size_kb']} KB)"
+                  f"\n```python\n")
+        footer = "\n```"
+        overhead = len(header) + len(footer)
+
+        if overhead >= remaining:
+            pending.append(idx)
+            continue
+
+        # 先尝试读文件内容
         fpath = os.path.join(project_info["project_path"], f["path"])
         try:
             with open(fpath, "r", encoding="utf-8", errors="ignore") as fp:
@@ -470,41 +482,73 @@ def analyze_with_ai(project_info: dict,
         except OSError:
             content = ""
 
-        header = f"\n### 文件: {f['path']} ({f['lines']} 行, {f['size_kb']} KB)\n```python\n"
-        footer = "\n```"
-        overhead = len(header) + len(footer)
-
-        if overhead >= remaining:
-            # 连 header 都放不下了，跳过
-            continue
-
-        if overhead + len(content) <= remaining:
-            # 预算充足 → 全量读取
-            snippet = content
-            remaining -= overhead + len(content)
+        total = overhead + len(content)
+        if total <= remaining:
+            # 全量放入
+            file_summary_parts.append(f"{header}{content}{footer}")
+            remaining -= total
         else:
-            # 预算不够完整文件 → 截断，读完本次就结束
-            available = remaining - overhead
-            lines = content.split("\n")
-            snippet_lines = []
-            char_count = 0
-            for line in lines:
-                take = len(line) + 1  # +1 for newline
-                if char_count + take > available:
-                    break
-                snippet_lines.append(line)
-                char_count += take
-            omitted = len(lines) - len(snippet_lines)
-            snippet = "\n".join(snippet_lines)
-            if omitted > 0:
-                snippet += f"\n# ... (省略 {omitted} 行)"
-            remaining = 0
+            # 放不下了 → 先存起来，阶段2统一截断分配
+            pending.append(idx)
 
-        file_summary_parts.append(f"{header}{snippet}{footer}")
+    # ── 阶段2：剩余预算平分给所有未读文件，每个至少截取开头 ──
+    if pending and remaining > 0:
+        # 每个文件有固定开销（header + footer），从剩余中扣除
+        overheads = []
+        for idx in pending:
+            f = sorted_files[idx]
+            h = (f"\n### 文件: {f['path']} ({f['lines']} 行, {f['size_kb']} KB)"
+                 f"\n```python\n")
+            overheads.append(len(h) + 4)  # +4 for \n```\n
+
+        total_overhead = sum(overheads)
+        if total_overhead >= remaining:
+            # 连 header 都放不下所有文件 → 能放几个是几个
+            budget_per_file = 0
+        else:
+            budget_per_file = (remaining - total_overhead) // len(pending)
+
+        for i, idx in enumerate(pending):
+            f = sorted_files[idx]
+            fpath = os.path.join(project_info["project_path"], f["path"])
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as fp:
+                    content = fp.read()
+            except OSError:
+                content = ""
+
+            header = (f"\n### 文件: {f['path']} ({f['lines']} 行, {f['size_kb']} KB)"
+                      f"\n```python\n")
+            footer = "\n```"
+
+            if budget_per_file <= 0:
+                # 只放 header + 首行（示意）
+                lines = content.split("\n")
+                snippet = (lines[0] + "\n# ... (预算不足，仅展示首行)"
+                           if lines else "")
+            else:
+                lines = content.split("\n")
+                snippet_lines = []
+                char_count = 0
+                for line in lines:
+                    take = len(line) + 1
+                    if char_count + take > budget_per_file:
+                        break
+                    snippet_lines.append(line)
+                    char_count += take
+                omitted = len(lines) - len(snippet_lines)
+                snippet = "\n".join(snippet_lines)
+                if omitted > 0:
+                    snippet += f"\n# ... (省略 {omitted} 行)"
+
+            file_summary_parts.append(f"{header}{snippet}{footer}")
 
     file_summary = "\n".join(file_summary_parts)
-    print(f"  📖 已读取 {len(file_summary_parts)}/{len(py_files)} 个 Python 文件"
+    read_count = len(file_summary_parts)
+    print(f"  📖 已读取 {read_count}/{len(py_files)} 个 Python 文件"
           f"（字符预算 {max_chars:,}，已用 {max_chars - remaining:,}）")
+    if pending:
+        print(f"      其中 {len(pending)} 个因预算不足截断读取")
     dir_tree = project_info.get("dir_tree", "")
     large_data = project_info.get("large_data_info", "无")
 
